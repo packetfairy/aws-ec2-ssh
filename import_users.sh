@@ -1,7 +1,9 @@
 #!/bin/bash -e
 
+PATH="${PATH}:/usr/local/sbin:/usr/local/bin"
+
 # check if AWS CLI exists
-if ! which aws; then
+if ! which aws > /dev/null; then
     echo "aws executable not found - exiting!"
     exit 1
 fi
@@ -48,7 +50,7 @@ fi
 : ${USERADD_PROGRAM:="/usr/sbin/useradd"}
 
 # Possibility to provide custom useradd arguments
-: ${USERADD_ARGS:="--user-group --create-home --shell /bin/bash"}
+: ${USERADD_ARGS:="--create-home --shell /bin/bash"}
 
 # Initizalize INSTANCE variable
 INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
@@ -180,12 +182,40 @@ function create_or_update_local_user() {
         localusergroups="${LOCAL_GROUPS},${LOCAL_MARKER_GROUP}"
     fi
 
+    user_home_dir="$(eval echo ~$username)"
     if ! id "${username}" >/dev/null 2>&1; then
         ${USERADD_PROGRAM} ${USERADD_ARGS} "${username}"
-        /bin/chown -R "${username}:${username}" "$(eval echo ~$username)"
+        /bin/chown -R "${username}" "${user_home_dir}"
         log "Created new user ${username}"
     fi
     /usr/sbin/usermod -a -G "${localusergroups}" "${username}"
+
+    # set up ssh keys
+    tmpfile="/tmp/${username}.authorized_keys"
+    ssh_dir="${user_home_dir}/.ssh"
+    /usr/local/sbin/authorized_keys_command.sh ${username} > ${tmpfile}
+    # make sure that authorized_keys_command runs ok; exit if we have a timeout, sort the contents if not
+    if [ $? -ne 0 ]; then
+        echo "error running authorized_keys_command for ${username} - exiting this script altogether"
+        exit 1
+    else
+        sort ${tmpfile} > ${tmpfile}.1
+        mv ${tmpfile}.1 ${tmpfile}
+    fi
+    # make sure our user has an ssh dir correctly set up
+    if [ ! -d "${ssh_dir}" ]; then
+        mkdir ${ssh_dir}
+        chown ${username} ${ssh_dir}
+        chmod 700 ${ssh_dir}
+    fi
+    # install the new authorized_keys file if it's different, remove the tmpfile if not
+    if ! diff "${tmpfile}" "${ssh_dir}/authorized_keys" 2>&1 > /dev/null; then
+        mv ${tmpfile} ${ssh_dir}/authorized_keys
+        chown ${username} ${ssh_dir}/authorized_keys
+        chmod 600 ${ssh_dir}/authorized_keys
+    else
+        rm ${tmpfile}
+    fi
 
     # Should we add this user to sudo ?
     if [[ ! -z "${SUDOERS_GROUPS}" ]]
@@ -211,7 +241,9 @@ function delete_local_user() {
     /usr/bin/pkill -9 -u "${1}" || true
     sleep 1
     # Remove account now that all processes for the user are gone
-    /usr/sbin/userdel -f -r "${1}"
+    # -r is a bit aggressive, especailly by default
+    # /usr/sbin/userdel -f -r "${1}"
+    /usr/sbin/userdel -f "${1}"
     log "Deleted user ${1}"
 }
 
@@ -250,7 +282,15 @@ function sync_accounts() {
     get_sudoers_groups_from_tag
 
     iam_users=$(get_clean_iam_users | sort | uniq)
+    if [ -z "${iam_users}" ]; then
+      logger 'we just got back an empty iam_users user list -- that sounds wrong; bailing out!'
+      exit 1
+    fi
     sudo_users=$(get_clean_sudoers_users | sort | uniq)
+    if [ -z "${sudo_users}" ]; then
+      logger 'we just got back an empty sudo_users user list -- that sounds wrong; bailing out!'
+      exit 1
+    fi
     local_users=$(get_local_users | sort | uniq)
 
     intersection=$(echo ${local_users} ${iam_users} | tr " " "\n" | sort | uniq -D | uniq)

@@ -1,11 +1,13 @@
 #!/bin/bash -e
 
+PATH="${PATH}:/usr/local/sbin:/usr/local/bin"
+
 if [ -z "$1" ]; then
   exit 1
 fi
 
 # check if AWS CLI exists
-if ! which aws; then
+if ! which aws > /dev/null; then
     echo "aws executable not found - exiting!"
     exit 1
 fi
