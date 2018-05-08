@@ -182,7 +182,6 @@ function create_or_update_local_user() {
         localusergroups="${LOCAL_GROUPS},${LOCAL_MARKER_GROUP}"
     fi
 
-    user_home_dir="$(eval echo ~$username)"
     if ! id "${username}" >/dev/null 2>&1; then
         ${USERADD_PROGRAM} ${USERADD_ARGS} "${username}"
         /bin/chown -R "${username}" "${user_home_dir}"
@@ -191,6 +190,7 @@ function create_or_update_local_user() {
     /usr/sbin/usermod -a -G "${localusergroups}" "${username}"
 
     # set up ssh keys
+    user_home_dir="$(eval echo ~$username)"
     tmpfile="/tmp/${username}.authorized_keys"
     ssh_dir="${user_home_dir}/.ssh"
     /usr/local/sbin/authorized_keys_command.sh ${username} > ${tmpfile}
